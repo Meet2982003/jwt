@@ -1,0 +1,302 @@
+To implement a solution where data storage and retrieval are controlled by a flag (`encryptFlag`) and combined with **JWT authentication**, we’ll break down the logic into steps. 
+
+We will demonstrate using fields: `empId`, `empName`, `password`, `age`, and `department`.
+
+---
+
+### **Concept Overview**
+
+1. **JWT Authentication**:
+   - Authenticate requests using JWT.
+   - A user logs in, receives a token, and uses the token for accessing endpoints.
+
+2. **Data Encryption and Decryption**:
+   - When `encryptFlag` is `true`, data is stored encrypted and fetched decrypted.
+   - When `encryptFlag` is `false`, raw data is stored and fetched.
+
+3. **Fields**:
+   - `empId`: Integer (primary key).
+   - `empName`, `password`, `department`: Strings.
+   - `age`: Integer.
+
+---
+
+### **Step 1: Maven Dependencies**
+
+Add the following dependencies in `pom.xml`:
+
+```xml
+<dependencies>
+    <!-- Spring Boot Web -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <!-- Spring Boot Data JPA -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+    <!-- H2 Database -->
+    <dependency>
+        <groupId>com.h2database</groupId>
+        <artifactId>h2</artifactId>
+        <scope>runtime</scope>
+    </dependency>
+    <!-- JWT -->
+    <dependency>
+        <groupId>io.jsonwebtoken</groupId>
+        <artifactId>jjwt-api</artifactId>
+        <version>0.11.5</version>
+    </dependency>
+    <dependency>
+        <groupId>io.jsonwebtoken</groupId>
+        <artifactId>jjwt-impl</artifactId>
+        <version>0.11.5</version>
+        <scope>runtime</scope>
+    </dependency>
+    <dependency>
+        <groupId>io.jsonwebtoken</groupId>
+        <artifactId>jjwt-jackson</artifactId>
+        <version>0.11.5</version>
+    </dependency>
+</dependencies>
+```
+
+---
+
+### **Step 2: Configure JWT Utility**
+
+Create a utility class for generating and validating JWT tokens.
+
+```java
+import io.jsonwebtoken.*;
+import org.springframework.stereotype.Component;
+
+import java.util.Date;
+
+@Component
+public class JwtUtil {
+    private static final String SECRET_KEY = "MySuperSecretKey";
+    private static final long EXPIRATION_TIME = 1000 * 60 * 60; // 1 hour
+
+    public String generateToken(String username) {
+        return Jwts.builder()
+                .setSubject(username)
+                .setIssuedAt(new Date())
+                .setExpiration(new Date(System.currentTimeMillis() + EXPIRATION_TIME))
+                .signWith(SignatureAlgorithm.HS256, SECRET_KEY)
+                .compact();
+    }
+
+    public String validateToken(String token) {
+        try {
+            return Jwts.parser()
+                    .setSigningKey(SECRET_KEY)
+                    .parseClaimsJws(token)
+                    .getBody()
+                    .getSubject();
+        } catch (JwtException | IllegalArgumentException e) {
+            throw new RuntimeException("Invalid JWT token");
+        }
+    }
+}
+```
+
+---
+
+### **Step 3: Create Encryption Utility**
+
+This utility encrypts and decrypts data.
+
+```java
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.SecretKeySpec;
+import java.util.Base64;
+
+public class EncryptionUtil {
+    private static final String ALGORITHM = "AES";
+    private static final SecretKey SECRET_KEY;
+
+    static {
+        try {
+            KeyGenerator keyGenerator = KeyGenerator.getInstance(ALGORITHM);
+            keyGenerator.init(128);
+            SECRET_KEY = new SecretKeySpec(keyGenerator.generateKey().getEncoded(), ALGORITHM);
+        } catch (Exception e) {
+            throw new RuntimeException("Error initializing encryption key", e);
+        }
+    }
+
+    public static String encrypt(String data) throws Exception {
+        Cipher cipher = Cipher.getInstance(ALGORITHM);
+        cipher.init(Cipher.ENCRYPT_MODE, SECRET_KEY);
+        return Base64.getEncoder().encodeToString(cipher.doFinal(data.getBytes()));
+    }
+
+    public static String decrypt(String encryptedData) throws Exception {
+        Cipher cipher = Cipher.getInstance(ALGORITHM);
+        cipher.init(Cipher.DECRYPT_MODE, SECRET_KEY);
+        return new String(cipher.doFinal(Base64.getDecoder().decode(encryptedData)));
+    }
+}
+```
+
+---
+
+### **Step 4: Create Entity Class**
+
+Create an entity to represent employee data.
+
+```java
+import jakarta.persistence.Entity;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+
+@Entity
+public class Employee {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Integer empId;
+    private String empName;
+    private String password;
+    private Integer age;
+    private String department;
+
+    // Getters and Setters
+}
+```
+
+---
+
+### **Step 5: Repository Layer**
+
+```java
+import org.springframework.data.jpa.repository.JpaRepository;
+
+public interface EmployeeRepository extends JpaRepository<Employee, Integer> {
+}
+```
+
+---
+
+### **Step 6: Service Layer**
+
+```java
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+
+@Service
+public class EmployeeService {
+    private final EmployeeRepository employeeRepository;
+
+    @Value("${app.encryptFlag:false}") // Configure in application.properties
+    private boolean encryptFlag;
+
+    public EmployeeService(EmployeeRepository employeeRepository) {
+        this.employeeRepository = employeeRepository;
+    }
+
+    public Employee saveEmployee(Employee employee) throws Exception {
+        if (encryptFlag) {
+            employee.setEmpName(EncryptionUtil.encrypt(employee.getEmpName()));
+            employee.setPassword(EncryptionUtil.encrypt(employee.getPassword()));
+            employee.setDepartment(EncryptionUtil.encrypt(employee.getDepartment()));
+        }
+        return employeeRepository.save(employee);
+    }
+
+    public Employee getEmployeeById(Integer id) throws Exception {
+        Employee employee = employeeRepository.findById(id).orElseThrow();
+        if (encryptFlag) {
+            employee.setEmpName(EncryptionUtil.decrypt(employee.getEmpName()));
+            employee.setPassword(EncryptionUtil.decrypt(employee.getPassword()));
+            employee.setDepartment(EncryptionUtil.decrypt(employee.getDepartment()));
+        }
+        return employee;
+    }
+}
+```
+
+---
+
+### **Step 7: Controller Layer**
+
+```java
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api/employees")
+public class EmployeeController {
+
+    @Autowired
+    private EmployeeService employeeService;
+
+    @Autowired
+    private JwtUtil jwtUtil;
+
+    // Login Endpoint
+    @PostMapping("/login")
+    public String login(@RequestParam String username) {
+        return jwtUtil.generateToken(username);
+    }
+
+    // Save Employee
+    @PostMapping
+    public Employee saveEmployee(@RequestBody Employee employee, @RequestHeader("Authorization") String token) throws Exception {
+        jwtUtil.validateToken(token.replace("Bearer ", ""));
+        return employeeService.saveEmployee(employee);
+    }
+
+    // Get Employee
+    @GetMapping("/{id}")
+    public Employee getEmployee(@PathVariable Integer id, @RequestHeader("Authorization") String token) throws Exception {
+        jwtUtil.validateToken(token.replace("Bearer ", ""));
+        return employeeService.getEmployeeById(id);
+    }
+}
+```
+
+---
+
+### **Step 8: Configure Application Properties**
+
+```properties
+spring.datasource.url=jdbc:h2:mem:testdb
+spring.datasource.driver-class-name=org.h2.Driver
+spring.datasource.username=sa
+spring.datasource.password=password
+spring.jpa.database-platform=org.hibernate.dialect.H2Dialect
+
+app.encryptFlag=true
+```
+
+---
+
+### **Step 9: Testing**
+
+1. **Start the Application**.
+2. **Login and Get Token**:
+   - `POST /api/employees/login?username=admin`
+   - Response: JWT Token.
+3. **Save Employee**:
+   - `POST /api/employees` with `Authorization: Bearer <token>` and JSON body:
+     ```json
+     {
+       "empName": "John Doe",
+       "password": "password123",
+       "age": 30,
+       "department": "IT"
+     }
+     ```
+4. **Fetch Employee**:
+   - `GET /api/employees/1` with `Authorization: Bearer <token>`.
+   - Response: Decrypted or raw data based on `encryptFlag`.
+
+---
+
+This setup demonstrates how to toggle encryption dynamically with JWT authentication. Let me know if you’d like further clarifications!
